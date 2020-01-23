@@ -1,7 +1,8 @@
-"""Calculates canopy coverage for plots in georeferenced images
+"""Calculates mean temperature for plots in georeferenced IR images
 """
 
 import argparse
+import datetime
 import json
 import logging
 import os
@@ -17,7 +18,8 @@ from terrautils.spatial import geojson_to_tuples_betydb, find_plots_intersect_bo
 from terrautils.imagefile import image_get_geobounds, get_epsg
 import terrautils.lemnatec
 
-import transformer_class    # pylint: disable=import-error
+import transformer_class
+import configuration
 
 terrautils.lemnatec.SENSOR_METADATA_CACHE = os.path.dirname(os.path.realpath(__file__))
 
@@ -25,22 +27,21 @@ terrautils.lemnatec.SENSOR_METADATA_CACHE = os.path.dirname(os.path.realpath(__f
 SUPPORTED_IMAGE_EXTS = [".tif", ".tiff"]
 
 # Array of trait names that should have array values associated with them
-TRAIT_NAME_ARRAY_VALUE = ['canopy_cover', 'site']
+TRAIT_NAME_ARRAY_VALUE = ['surface_temperature', 'site']
 
 # Mapping of default trait names to fixed values
 TRAIT_NAME_MAP = {
     'access_level': '2',
-    'species': 'Unknown',
-    'citation_author': '"Zongyang, Li"',
-    'citation_year': '2016',
-    'citation_title': 'Maricopa Field Station Data and Metadata',
-    'method': 'Canopy Cover Estimation from RGB images'
+    'citation_author': '',
+    'citation_year': '',
+    'citation_title': '',
+    'method': 'Mean temperature from infrared images'
 }
 
 def get_fields() -> list:
     """Returns the supported field names as a list
     """
-    return ['local_datetime', 'canopy_cover', 'access_level', 'species', 'site',
+    return ['local_datetime', 'surface_temperature', 'access_level', 'site',
             'citation_author', 'citation_year', 'citation_title', 'method']
 
 def get_default_trait(trait_name: str):
@@ -55,13 +56,12 @@ def get_default_trait(trait_name: str):
     global TRAIT_NAME_ARRAY_VALUE
     global TRAIT_NAME_MAP
 
-    # pylint: disable=no-else-return
     if trait_name in TRAIT_NAME_ARRAY_VALUE:
         return []   # Return an empty list when the name matches
-    elif trait_name in TRAIT_NAME_MAP:
+    if trait_name in TRAIT_NAME_MAP:
         return TRAIT_NAME_MAP[trait_name]
-    else:
-        return ""
+
+    return ""
 
 def get_traits_table() -> list:
     """Returns the field names and default trait values
@@ -97,24 +97,6 @@ def generate_traits_list(traits: list) -> list:
 
     return trait_list
 
-def calculate_canopycover_masked(pxarray: np.ndarray) -> float:
-    """Return greenness percentage of given numpy array of pixels.
-
-    Args:
-      pxarray (numpy array): rgb image
-
-    Return:
-      (float): greenness percentage
-    """
-
-    # For masked images, all nonzero pixels are considered canopy
-    nonzeros = np.count_nonzero(pxarray)
-    ratio = nonzeros/float(pxarray.size)
-    # Scale ratio from 0-1 to 0-100
-    ratio *= 100.0
-
-    return ratio
-
 def get_image_bounds(image_file: str) -> str:
     """Loads the boundaries from an image file
     Arguments:
@@ -147,11 +129,11 @@ def get_image_bounds(image_file: str) -> str:
     return None
 
 def get_spatial_reference_from_json(geojson: str):
-    """Returns the spatial reference embeddeed in the geojson.
+    """Returns the spatial reference embedded in the geojson.
     Args:
         geojson(str): the geojson to get the spatial reference from
     Return:
-        The osr.SpatialReference that represents the geographics coordinate system
+        The osr.SpatialReference that represents the geographical coordinate system
         in the geojson. None is returned if a spatial reference isn't found
     """
     yaml_geom = yaml.safe_load(geojson)
@@ -179,11 +161,6 @@ def add_parameters(parser: argparse.ArgumentParser) -> None:
                         default="Unknown",
                         help="year of citation to use when generating measurements")
 
-    parser.add_argument('--germplasm_name', dest="germplasmName", type=str, nargs='?',
-                        default="Unknown",
-                        help="name of the germplasm associated with the canopy cover")
-
-#pylint: disable=unused-argument
 def check_continue(transformer: transformer_class.Transformer, check_md: dict, transformer_md: dict, full_md: dict) -> tuple:
     """Checks if conditions are right for continuing processing
     Arguments:
@@ -192,9 +169,10 @@ def check_continue(transformer: transformer_class.Transformer, check_md: dict, t
         Returns a tuple containing the return code for continuing or not, and
         an error message if there's an error
     """
+    # pylint: disable=unused-argument
     # Check that we have what we need
-    if not 'list_files' in check_md:
-        return (-1, "Unable to find list of files associated with this request")
+    if 'list_files' not in check_md:
+        return -1, "Unable to find list of files associated with this request"
 
     # Make sure there's a tiff file to process
     image_exts = SUPPORTED_IMAGE_EXTS
@@ -206,38 +184,40 @@ def check_continue(transformer: transformer_class.Transformer, check_md: dict, t
             break
 
     # Return the appropriate result
-    return (0) if found_file else (-1, "Unable to find an image file to work with")
+    return 0 if found_file else (-1, "Unable to find an image file to work with")
 
-def perform_process(transformer: transformer_class.Transformer, check_md: dict, transformer_md: dict, full_md: dict) -> dict:
+def perform_process(transformer: transformer_class.Transformer, check_md: dict, transformer_md: list, full_md: list) -> dict:
     """Performs the processing of the data
     Arguments:
         transformer: instance of transformer class
     Return:
         Returns a dictionary with the results of processing
     """
+    # pylint: disable=unused-argument
+    # Disabling pylint checks because resolving them would make code unreadable
+    # pylint: disable=too-many-branches, too-many-statements, too-many-locals
     # Setup local variables
+    start_timestamp = datetime.datetime.now()
     timestamp = dateutil.parser.parse(check_md['timestamp'])
     datestamp = timestamp.strftime("%Y-%m-%d")
     localtime = timestamp.strftime("%Y-%m-%dT%H:%M:%S")
 
-    geo_csv_filename = os.path.join(check_md['working_folder'], "canopycover_geostreams.csv")
-    bety_csv_filename = os.path.join(check_md['working_folder'], "canopycover.csv")
+    geo_csv_filename = os.path.join(check_md['working_folder'], "meantemp_geostreams.csv")
+    bety_csv_filename = os.path.join(check_md['working_folder'], "meantemp.csv")
     geo_file = open(geo_csv_filename, 'w')
     bety_file = open(bety_csv_filename, 'w')
 
     (fields, traits) = get_traits_table()
 
     # Setup default trait values
-    if not transformer.args.germplasmName is None:
-        traits['species'] = transformer.args.germplasmName
-    if not transformer.args.citationAuthor is None:
+    if transformer.args.citationAuthor is not None:
         traits['citation_author'] = transformer.args.citationAuthor
-    if not transformer.args.citationTitle is None:
+    if transformer.args.citationTitle is not None:
         traits['citation_title'] = transformer.args.citationTitle
-    if not transformer.args.citationYear is None:
+    if transformer.args.citationYear is not None:
         traits['citation_year'] = transformer.args.citationYear
     else:
-        traits['citation_year'] = (timestamp.year)
+        traits['citation_year'] = timestamp.year
 
     geo_csv_header = ','.join(['site', 'trait', 'lat', 'lon', 'dp_time', 'source', 'value', 'timestamp'])
     bety_csv_header = ','.join(map(str, fields))
@@ -252,11 +232,15 @@ def perform_process(transformer: transformer_class.Transformer, check_md: dict, 
     # Loop through finding all image files
     image_exts = SUPPORTED_IMAGE_EXTS
     num_files = 0
+    number_empty_plots = 0
     total_plots_calculated = 0
+    total_files = 0
+    processed_plots = 0
     logging.debug("Looking for images with an extension of: %s", ",".join(image_exts))
     for one_file in check_md['list_files']():
+        total_files += 1
         ext = os.path.splitext(one_file)[1]
-        if not ext or not ext in image_exts:
+        if not ext or ext not in image_exts:
             logging.debug("Skipping non-supported file '%s'", one_file)
             continue
 
@@ -275,37 +259,42 @@ def perform_process(transformer: transformer_class.Transformer, check_md: dict, 
         num_files += 1
         image_spatial_ref = get_spatial_reference_from_json(image_bounds)
         for plot_name in overlap_plots:
+            processed_plots += 1
             plot_bounds = convert_json_geometry(overlap_plots[plot_name], image_spatial_ref)
             tuples = geojson_to_tuples_betydb(yaml.safe_load(plot_bounds))
             centroid = json.loads(centroid_from_geojson(plot_bounds))["coordinates"]
 
             try:
                 logging.debug("Clipping raster to plot")
-                pxarray = clip_raster(one_file, tuples, os.path.join(check_md['working_folder'], "temp.tif"))
+                clip_path = os.path.join(check_md['working_folder'], "temp.tif")
+                pxarray = clip_raster(one_file, tuples, clip_path)
+                if os.path.exists(clip_path):
+                    os.remove(clip_path)
                 if pxarray is not None:
-                    if len(pxarray.shape) < 3:
-                        logging.warning("Unexpected image dimensions for file '%s'", one_file)
-                        logging.warning("    expected 3 and received %s", str(pxarray.shape))
-                        break
+                    logging.debug("Calculating mean temperature")
+                    pxarray[pxarray < 0] = np.nan
+                    mean_tc = np.nanmean(pxarray) - 273.15
 
-                    logging.debug("Calculating canopy cover")
-                    cc_val = calculate_canopycover_masked(np.rollaxis(pxarray, 0, 3))
+                    # Check for empty plots
+                    if np.isnan(mean_tc):
+                        number_empty_plots += 1
+                        continue
 
-                    # Write the datapoint geographically and otherwise
+                    # Write the data point geographically and otherwise
                     logging.debug("Writing to CSV files")
                     if geo_file:
                         csv_data = ','.join([plot_name,
-                                             'Canopy Cover',
+                                             'IR Surface Temperature',
                                              str(centroid[1]),
                                              str(centroid[0]),
                                              localtime,
                                              one_file,
-                                             str(cc_val),
+                                             str(mean_tc),
                                              datestamp])
                         geo_file.write(csv_data + "\n")
 
                     if bety_file:
-                        traits['canopy_cover'] = str(cc_val)
+                        traits['surface_temperature'] = str(mean_tc)
                         traits['site'] = plot_name
                         traits['local_datetime'] = localtime
                         trait_list = generate_traits_list(traits)
@@ -317,8 +306,8 @@ def perform_process(transformer: transformer_class.Transformer, check_md: dict, 
                 else:
                     continue
             except Exception as ex:
-                logging.warning("Exception caught while processing canopy cover: %s", str(ex))
-                logging.warning("Error generating canopy cover for '%s'", one_file)
+                logging.warning("Exception caught while processing mean temperature: %s", str(ex))
+                logging.warning("Error generating mean temperature for '%s'", one_file)
                 logging.warning("    plot name: '%s'", plot_name)
                 continue
 
@@ -338,9 +327,19 @@ def perform_process(transformer: transformer_class.Transformer, check_md: dict, 
     # Perform cleanup
     if geo_file:
         geo_file.close()
-        del geo_file
     if bety_file:
         bety_file.close()
-        del bety_file
 
-    return {'code': 0, 'files': file_md}
+    return {'code': 0,
+            'files': file_md,
+            configuration.TRANSFORMER_NAME:
+            {
+                'version': configuration.TRANSFORMER_VERSION,
+                'utc_timestamp': datetime.datetime.utcnow().isoformat(),
+                'processing_time': str(datetime.datetime.now() - start_timestamp),
+                'total_file_count': total_files,
+                'processed_file_count': num_files,
+                'total_plots_processed': processed_plots,
+                'empty_plots': number_empty_plots
+            }
+            }
